@@ -18,12 +18,12 @@ type Event struct {
 	StartTime  string
 	DateofQuiz string
 	RoomId     string
-	Questions  []structure.Creataquestion
+	Questions  []structure.Question
 }
 
 var client = structure.Client()
 
-func generateRandomCode(n int) string {
+func GenerateRandomCode(n int) string {
 	const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	code := make([]byte, n)
 	for i := range code {
@@ -33,7 +33,7 @@ func generateRandomCode(n int) string {
 }
 
 func InsertEvent(c *gin.Context) {
-	var newEvent structure.Createroom
+	var newEvent structure.CreateEvent
 	db := client.Database("quizdb")
 	collection := db.Collection("event")
 	if err := c.BindJSON(&newEvent); err != nil {
@@ -45,8 +45,8 @@ func InsertEvent(c *gin.Context) {
 		Nameofroom: newEvent.Nameofroom,
 		StartTime:  newEvent.StartTime,
 		DateofQuiz: newEvent.DateofQuiz,
-		RoomId:     generateRandomCode(8),
-		Questions:  []structure.Creataquestion{},
+		RoomId:     GenerateRandomCode(8),
+		Questions:  []structure.Question{},
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -64,8 +64,8 @@ func InsertEvent(c *gin.Context) {
 
 func AddQuestionHandler(c *gin.Context) {
 	var req struct {
-		RoomId   string                   `json:"roomid"`
-		Question structure.Creataquestion `json:"question"`
+		RoomId   string             `json:"roomid"`
+		Question structure.Question `json:"question"`
 	}
 
 	if err := c.BindJSON(&req); err != nil {

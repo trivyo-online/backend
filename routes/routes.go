@@ -12,5 +12,6 @@ func RegisterRoutes(r *gin.Engine) {
 	{
 		api.POST("/create-event", logicforadmin.InsertEvent)
 		api.POST("/add-question", logicforadmin.AddQuestionHandler)
+
 	}
 }

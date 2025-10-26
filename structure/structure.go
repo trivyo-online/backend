@@ -4,25 +4,92 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
+	"sync"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/joho/godotenv"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-type Createroom struct {
+type CreateEvent struct {
 	Nameofroom string
 	StartTime  string
 	DateofQuiz string
 }
 
-type Creataquestion struct {
+type Question struct {
 	Question         string
 	Options          []string
 	Correctoption    string
 	Eachquestiontime *int
+}
+type Event struct {
+	Nameofroom string     `bson:"nameofroom"`
+	StartTime  string     `bson:"starttime"`
+	DateofQuiz string     `bson:"dateofquiz"`
+	RoomId     string     `bson:"roomid"`
+	Questions  []Question `bson:"questions"`
+}
+
+type ClientMessage struct {
+	Type       string `json:"type"`
+	UserID     string `json:"user_id"`
+	RoomID     string `json:"room_id"`
+	QuestionID string `json:"question_id,omitempty"`
+	Selected   int    `json:"selected,omitempty"`
+}
+
+type ServerMessage struct {
+	Type     string    `json:"type"`
+	Message  string    `json:"message,omitempty"`
+	Question *Question `json:"question,omitempty"`
+	Correct  *bool     `json:"correct,omitempty"`
+	Score    *int      `json:"score,omitempty"`
+}
+type CreateRoomRequest struct {
+	RoomID         string   `json:"room_id,omitempty"`
+	HostID         string   `json:"host_id,omitempty"`
+	QuestionIDs    []string `json:"question_ids,omitempty"`
+	QuestionTopic  string   `json:"question_topic,omitempty"`
+	NumQuestions   int      `json:"num_questions,omitempty"`
+	QuestionTTLMin int      `json:"question_ttl_minutes,omitempty"`
+}
+
+type WClient struct {
+	Conn   *websocket.Conn
+	Send   chan []byte
+	UserID string
+	RoomID string
+}
+
+type RoomManager struct {
+	Rooms map[string]*Room
+	Mutex sync.RWMutex
+}
+
+var Mgr = &RoomManager{Rooms: make(map[string]*Room)}
+
+type Room struct {
+	ID           string
+	HostID       string
+	Clients      map[*WClient]bool
+	Register     chan *WClient
+	Unregister   chan *WClient
+	Broadcast    chan []byte
+	QuestionsKey string
+	QuizStarted  bool
+	CurrentIndex int
+	Scores       map[string]int
+	Mutex        sync.RWMutex
+	QuestionTTL  time.Duration
+}
+
+var Upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
 func Client() *mongo.Client {
@@ -30,7 +97,7 @@ func Client() *mongo.Client {
 	defer cancel()
 	err := godotenv.Load()
 	if err != nil {
-		log.Println("⚠️ Warning: .env file not found, make sure it exists")
+		log.Println("Warning: .env file not found, make sure it exists")
 	}
 	mongourl := os.Getenv("MON")
 	fmt.Println("url ", mongourl)
