@@ -41,11 +41,12 @@ func InsertEvent(c *gin.Context) {
 		return
 	}
 
-	event := Event{
+	event := structure.Event{
 		Nameofroom: newEvent.Nameofroom,
 		StartTime:  newEvent.StartTime,
 		DateofQuiz: newEvent.DateofQuiz,
 		RoomId:     GenerateRandomCode(8),
+		HostID:     newEvent.HostID,
 		Questions:  []structure.Question{},
 	}
 

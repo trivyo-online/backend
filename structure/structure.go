@@ -19,6 +19,7 @@ type CreateEvent struct {
 	Nameofroom string
 	StartTime  string
 	DateofQuiz string
+	HostID     string
 }
 
 type Question struct {
@@ -28,11 +29,13 @@ type Question struct {
 	Eachquestiontime *int
 }
 type Event struct {
-	Nameofroom string     `bson:"nameofroom"`
-	StartTime  string     `bson:"starttime"`
-	DateofQuiz string     `bson:"dateofquiz"`
-	RoomId     string     `bson:"roomid"`
-	Questions  []Question `bson:"questions"`
+	Nameofroom        string `bson:"nameofroom"`
+	StartTime         string `bson:"starttime"`
+	DateofQuiz        string `bson:"dateofquiz"`
+	RoomId            string `bson:"roomid"`
+	HostID            string
+	Questions         []Question `bson:"questions"`
+	Timingperquestion time.Duration
 }
 
 type ClientMessage struct {
@@ -59,10 +62,21 @@ type CreateRoomRequest struct {
 	QuestionTTLMin int      `json:"question_ttl_minutes,omitempty"`
 }
 
+type HostConnection struct {
+	HostID string
+	RoomId string
+}
 type WClient struct {
 	Conn   *websocket.Conn
 	Send   chan []byte
 	UserID string
+	RoomID string
+}
+
+type HWClient struct {
+	Conn   *websocket.Conn
+	Send   chan []byte
+	HostID string
 	RoomID string
 }
 
@@ -77,6 +91,7 @@ type Room struct {
 	ID           string
 	HostID       string
 	Clients      map[*WClient]bool
+	Host         map[*HWClient]bool
 	Register     chan *WClient
 	Unregister   chan *WClient
 	Broadcast    chan []byte
