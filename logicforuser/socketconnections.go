@@ -2,6 +2,7 @@ package logicforuser
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"net/http"
 	"time"
@@ -81,10 +82,22 @@ func HostConnection(c *gin.Context) {
 		conn.Close()
 		return
 	}
+
+	rdb := structure.RedisClient()
+
+	jsonData, _ := json.Marshal(details)
+
+	err = rdb.SetNX(ctx, "event:"+roomID, jsonData, 3*time.Hour).Err()
+	if err != nil {
+		log.Println("redis set error:", err)
+
+	}
+
 	hub := NewRoom(details.RoomId, details.HostID, details.Timingperquestion)
 	go hub.Run()
 	hub.HostRegister <- wsClient
 	go wsClient.WritePump()
+
 	HostBrodcast(hub, "Room started")
 
 }
@@ -118,7 +131,9 @@ func (h *Room) Run() {
 				delete(h.Hosts, host)
 				close(host.Send)
 			}
+
 		case hostMsg := <-h.HostBrodcast:
+			h.QuizStarted = true
 			for host := range h.Hosts {
 				select {
 				case host.Send <- hostMsg:
@@ -128,8 +143,6 @@ func (h *Room) Run() {
 				}
 			}
 
-			// case ans := <-h.Answers:
-			// 	fmt.Printf("Client %s answered %s\n", ans.ClientID, ans.Choice)
 		}
 	}
 }

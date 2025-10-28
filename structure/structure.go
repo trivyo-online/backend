@@ -11,6 +11,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/joho/godotenv"
+	"github.com/redis/go-redis/v9"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -128,4 +129,23 @@ func Client() *mongo.Client {
 	fmt.Println("CONNECTED SUCCESFULLY")
 
 	return client
+}
+
+var ctx = context.Background()
+
+func RedisClient() *redis.Client {
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     "redis-13071.c9.us-east-1-2.ec2.redns.redis-cloud.com:13071",
+		Username: "default",
+		Password: "JF4ZnoE683gQi04bdanJoTRR80pvXnhP",
+		DB:       0,
+	})
+
+	if pong, err := rdb.Ping(ctx).Result(); err != nil {
+		panic(err)
+	} else {
+		fmt.Println("Redis connected:", pong)
+	}
+
+	return rdb
 }
