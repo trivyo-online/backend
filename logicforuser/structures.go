@@ -1,6 +1,8 @@
 package logicforuser
 
 import (
+	"encoding/json"
+	"log"
 	"sync"
 	"time"
 
@@ -80,6 +82,12 @@ func NewRoom(id string, hostID string, ttl time.Duration) *Room {
 	}
 }
 
+type Ifpresentupgradeconnection struct {
+	UserId string
+	RoomID string
+	HostID string
+}
+
 // func NewHub() *Hub {
 // 	return &Hub{
 // 		Clients:    make(map[*Client]bool),
@@ -90,7 +98,7 @@ func NewRoom(id string, hostID string, ttl time.Duration) *Room {
 // 	}
 // }
 
-func (c *HostClient) WritePump() {
+func (c *HostClient) HWritePump() {
 	for msg := range c.Send {
 		err := c.Conn.WriteMessage(websocket.TextMessage, msg)
 		if err != nil {
@@ -98,4 +106,68 @@ func (c *HostClient) WritePump() {
 		}
 	}
 	c.Conn.Close()
+}
+
+func (c *UserClient) UWritePump() {
+	for msg := range c.Send {
+		err := c.Conn.WriteMessage(websocket.TextMessage, msg)
+		if err != nil {
+			break
+		}
+	}
+	c.Conn.Close()
+}
+
+func (c *UserClient) UReadPump(hub *Room) {
+	defer func() {
+		hub.Unregister <- c
+		c.Conn.Close()
+	}()
+
+	for {
+		_, msg, err := c.Conn.ReadMessage()
+		if err != nil {
+			break
+		}
+
+		var ans struct{ Choice string }
+		if err := json.Unmarshal(msg, &ans); err != nil {
+			continue // ignore invalid json, continue reading
+		}
+
+		log.Println(ans.Choice)
+
+	}
+}
+
+func (c *HostClient) HReadPump(hub *Room) {
+	defer func() {
+		hub.Hostunregister <- c
+		c.Conn.Close()
+	}()
+
+	for {
+		_, msg, err := c.Conn.ReadMessage()
+		if err != nil {
+			break
+		}
+
+		var ans struct{ Choice string }
+		if err := json.Unmarshal(msg, &ans); err != nil {
+			continue // ignore invalid json, continue reading
+		}
+
+		log.Println(ans.Choice)
+
+	}
+}
+
+var Rooms = make(map[string]*Room)
+
+func SaveRoom(r *Room) {
+	Rooms[r.ID] = r
+}
+
+func GetRoom(id string) *Room {
+	return Rooms[id]
 }

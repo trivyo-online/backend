@@ -36,6 +36,7 @@ type Event struct {
 	RoomId            string `bson:"roomid"`
 	HostID            string
 	Questions         []Question `bson:"questions"`
+	QuizStarted       bool
 	Timingperquestion time.Duration
 }
 
