@@ -96,8 +96,9 @@ func HostConnection(c *gin.Context) {
 
 	go wsClient.HReadPump(hub)
 	go wsClient.HWritePump()
-}
+	wsClient.Send <- []byte(`{"status":"connected","message":"Host connected successfully"}`)
 
+}
 func ConnecttoRoom(c *gin.Context) {
 	roomID := c.Query("roomid")
 	hostID := c.Query("hostid")
@@ -109,6 +110,19 @@ func ConnecttoRoom(c *gin.Context) {
 	}
 
 	room := GetRoom(roomID)
+	if room == nil {
+		log.Println("❌ room not found for roomID:", roomID)
+		c.JSON(404, gin.H{"error": "room not found"})
+		return
+	}
+
+	if room.Register == nil {
+		log.Println("❌ room.Register is nil — initializing channels")
+		room.Register = make(chan *UserClient)
+		room.Unregister = make(chan *UserClient)
+		room.Broadcast = make(chan []byte)
+		room.Clients = make(map[*UserClient]bool)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -116,28 +130,23 @@ func ConnecttoRoom(c *gin.Context) {
 	rdb := structure.RedisClient()
 
 	host, err := rdb.Do(ctx, "JSON.GET", "event:"+roomID, "$.HostID").Text()
-	log.Println(host)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "error reading redis"})
 		return
 	}
 	host = strings.Trim(host, `[]"`)
-	log.Println(host)
-
 	if host != hostID {
-		log.Println("host pronlem")
+		log.Println("❌ Host ID mismatch — expected:", host, "got:", hostID)
+		c.JSON(400, gin.H{"error": "host mismatch"})
 		return
 	}
 
 	started, err := rdb.Do(ctx, "JSON.GET", "event:"+roomID, "$.QuizStarted").Text()
-	log.Println(started)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "cannot read QuizStarted"})
 		return
 	}
 	started = strings.Trim(started, `"[]`)
-	log.Println(started)
-
 	if started != "true" {
 		c.JSON(400, gin.H{"status": "Room is not started"})
 		return
@@ -156,11 +165,11 @@ func ConnecttoRoom(c *gin.Context) {
 		RoomID: roomID,
 	}
 
+	// ✅ safe: room.Register now initialized
 	room.Register <- wsClient
 
 	go wsClient.UReadPump(room)
 	go wsClient.UWritePump()
-
 }
 
 func (h *Room) Run() {
