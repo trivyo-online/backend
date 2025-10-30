@@ -1,7 +1,6 @@
 package logicforuser
 
 import (
-	"encoding/json"
 	"log"
 	"sync"
 	"time"
@@ -69,12 +68,12 @@ func NewRoom(id string, hostID string, ttl time.Duration) *Room {
 		HostID:         hostID,
 		Clients:        make(map[*UserClient]bool),
 		Hosts:          make(map[*HostClient]bool),
-		Register:       make(chan *UserClient),
-		HostRegister:   make(chan *HostClient),
-		Hostunregister: make(chan *HostClient),
-		Unregister:     make(chan *UserClient),
-		Broadcast:      make(chan []byte),
-		HostBrodcast:   make(chan []byte),
+		Register:       make(chan *UserClient, 256),
+		HostRegister:   make(chan *HostClient, 256),
+		Hostunregister: make(chan *HostClient, 256),
+		Unregister:     make(chan *UserClient, 256),
+		Broadcast:      make(chan []byte, 256),
+		HostBrodcast:   make(chan []byte, 256),
 		QuizStarted:    false,
 		CurrentIndex:   0,
 		Scores:         make(map[string]int),
@@ -117,7 +116,6 @@ func (c *UserClient) UWritePump() {
 	}
 	c.Conn.Close()
 }
-
 func (c *UserClient) UReadPump(hub *Room) {
 	defer func() {
 		hub.Unregister <- c
@@ -127,16 +125,12 @@ func (c *UserClient) UReadPump(hub *Room) {
 	for {
 		_, msg, err := c.Conn.ReadMessage()
 		if err != nil {
+			log.Println("User read error:", err)
 			break
 		}
-
-		var ans struct{ Choice string }
-		if err := json.Unmarshal(msg, &ans); err != nil {
-			continue // ignore invalid json, continue reading
-		}
-
-		log.Println(ans.Choice)
-
+		log.Println("User sent:", string(msg))
+		// ✅ Broadcast to host(s)
+		hub.HostBrodcast <- msg
 	}
 }
 
@@ -149,25 +143,26 @@ func (c *HostClient) HReadPump(hub *Room) {
 	for {
 		_, msg, err := c.Conn.ReadMessage()
 		if err != nil {
+			log.Println("Host read error:", err)
 			break
 		}
-
-		var ans struct{ Choice string }
-		if err := json.Unmarshal(msg, &ans); err != nil {
-			continue // ignore invalid json, continue reading
-		}
-
-		log.Println(ans.Choice)
-
+		log.Println("Host sent:", string(msg))
+		// ✅ Broadcast to users
+		hub.Broadcast <- msg
 	}
 }
 
 var Rooms = make(map[string]*Room)
+var roomMutex sync.RWMutex
 
 func SaveRoom(r *Room) {
+	roomMutex.Lock()
+	defer roomMutex.Unlock()
 	Rooms[r.ID] = r
 }
 
 func GetRoom(id string) *Room {
+	roomMutex.RLock()
+	defer roomMutex.RUnlock()
 	return Rooms[id]
 }

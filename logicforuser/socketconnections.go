@@ -86,12 +86,16 @@ func HostConnection(c *gin.Context) {
 		log.Println("redis json.set error:", cmd.Err())
 	}
 	// set TTL for the whole key
+
 	rdb.Expire(ctx, "event:"+roomID, 3*time.Hour)
 
 	hub := NewRoom(details.RoomId, details.HostID, details.Timingperquestion)
 	SaveRoom(hub)
 	go hub.Run()
 	hub.HostRegister <- wsClient
+
+	go wsClient.HReadPump(hub)
+	go wsClient.HWritePump()
 }
 
 func ConnecttoRoom(c *gin.Context) {
@@ -153,24 +157,32 @@ func ConnecttoRoom(c *gin.Context) {
 	}
 
 	room.Register <- wsClient
-	wsClient.Send <- []byte(`{"status":"connected"}`)
+
 	go wsClient.UReadPump(room)
 	go wsClient.UWritePump()
+
 }
 
 func (h *Room) Run() {
 	for {
 		select {
+
+		// --- When a user connects ---
 		case client := <-h.Register:
 			h.Clients[client] = true
+			log.Println("User registered:", client.Userid)
+			client.Send <- []byte(`{"status":"connected"}`)
 
+		// --- When a user disconnects ---
 		case client := <-h.Unregister:
 			if _, ok := h.Clients[client]; ok {
 				delete(h.Clients, client)
 				close(client.Send)
 			}
 
+		// --- When a user sends a message (UserBroadcast) ---
 		case message := <-h.Broadcast:
+			// send to all users
 			for client := range h.Clients {
 				select {
 				case client.Send <- message:
@@ -179,17 +191,41 @@ func (h *Room) Run() {
 					delete(h.Clients, client)
 				}
 			}
+			// ✅ also send to host(s)
+			for host := range h.Hosts {
+				select {
+				case host.Send <- message:
+				default:
+					close(host.Send)
+					delete(h.Hosts, host)
+				}
+			}
+
+		// --- When a host connects ---
 		case host := <-h.HostRegister:
 			h.Hosts[host] = true
+			log.Println("Host registered:", host.HostID)
 
+		// --- When a host disconnects ---
 		case host := <-h.Hostunregister:
 			if _, ok := h.Hosts[host]; ok {
 				delete(h.Hosts, host)
 				close(host.Send)
 			}
 
+		// --- When the host sends a message (HostBroadcast) ---
 		case hostMsg := <-h.HostBrodcast:
 			h.QuizStarted = true
+
+			for client := range h.Clients {
+				select {
+				case client.Send <- hostMsg:
+				default:
+					close(client.Send)
+					delete(h.Clients, client)
+				}
+			}
+
 			for host := range h.Hosts {
 				select {
 				case host.Send <- hostMsg:
@@ -198,7 +234,6 @@ func (h *Room) Run() {
 					delete(h.Hosts, host)
 				}
 			}
-
 		}
 	}
 }
@@ -233,4 +268,8 @@ func (h *Room) Run() {
 
 func HostBrodcast(r *Room, question string) {
 	r.HostBrodcast <- []byte(question)
+}
+
+func UserBrodcast(r *Room, question string) {
+	r.Broadcast <- []byte(question)
 }
