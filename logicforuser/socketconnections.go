@@ -167,22 +167,18 @@ func (h *Room) Run() {
 	for {
 		select {
 
-		// --- When a user connects ---
 		case client := <-h.Register:
 			h.Clients[client] = true
 			log.Println("User registered:", client.Userid)
 			client.Send <- []byte(`{"status":"connected"}`)
 
-		// --- When a user disconnects ---
 		case client := <-h.Unregister:
 			if _, ok := h.Clients[client]; ok {
 				delete(h.Clients, client)
 				close(client.Send)
 			}
 
-		// --- When a user sends a message (UserBroadcast) ---
 		case message := <-h.Broadcast:
-			// send to all users
 			for client := range h.Clients {
 				select {
 				case client.Send <- message:
@@ -191,7 +187,7 @@ func (h *Room) Run() {
 					delete(h.Clients, client)
 				}
 			}
-			// ✅ also send to host(s)
+
 			for host := range h.Hosts {
 				select {
 				case host.Send <- message:
@@ -201,19 +197,16 @@ func (h *Room) Run() {
 				}
 			}
 
-		// --- When a host connects ---
 		case host := <-h.HostRegister:
 			h.Hosts[host] = true
 			log.Println("Host registered:", host.HostID)
 
-		// --- When a host disconnects ---
 		case host := <-h.Hostunregister:
 			if _, ok := h.Hosts[host]; ok {
 				delete(h.Hosts, host)
 				close(host.Send)
 			}
 
-		// --- When the host sends a message (HostBroadcast) ---
 		case hostMsg := <-h.HostBrodcast:
 			h.QuizStarted = true
 

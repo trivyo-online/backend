@@ -129,7 +129,7 @@ func (c *UserClient) UReadPump(hub *Room) {
 			break
 		}
 		log.Println("User sent:", string(msg))
-		// ✅ Broadcast to host(s)
+
 		hub.HostBrodcast <- msg
 	}
 }
@@ -147,7 +147,6 @@ func (c *HostClient) HReadPump(hub *Room) {
 			break
 		}
 		log.Println("Host sent:", string(msg))
-		// ✅ Broadcast to users
 		hub.Broadcast <- msg
 	}
 }
