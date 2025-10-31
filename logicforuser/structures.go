@@ -1,9 +1,15 @@
 package logicforuser
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"log"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
+	"trivyo_online/structure"
 
 	"github.com/gorilla/websocket"
 )
@@ -134,11 +140,24 @@ func (c *UserClient) UReadPump(hub *Room) {
 	}
 }
 
+type HostMessage struct {
+	RoomID     string `json:"roomid"`
+	UserID     string `json:"userid"`
+	QuestionNo string `json:"questionno"`
+	Ans        string `json:"ans"`
+}
+
+var ctx = context.Background()
+
 func (c *HostClient) HReadPump(hub *Room) {
 	defer func() {
 		hub.Hostunregister <- c
+		c.Conn.WriteMessage(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, "connection closed"))
 		c.Conn.Close()
 	}()
+
+	rdb := structure.RedisClient()
 
 	for {
 		_, msg, err := c.Conn.ReadMessage()
@@ -146,8 +165,64 @@ func (c *HostClient) HReadPump(hub *Room) {
 			log.Println("Host read error:", err)
 			break
 		}
-		log.Println("Host sent:", string(msg))
-		hub.Broadcast <- msg
+
+		var data HostMessage
+		if err := json.Unmarshal(msg, &data); err != nil {
+			log.Println("Invalid JSON:", err)
+			continue
+		}
+
+		roomKey := fmt.Sprintf("event:%s", data.UserID)
+		roomData, err := rdb.Do(ctx, "JSON.GET", roomKey).Text()
+		if err != nil {
+			log.Println("Redis JSON.GET error:", err)
+			continue
+		}
+
+		var quiz struct {
+			Questions []struct {
+				Question         string      `json:"Question"`
+				Options          []string    `json:"Options"`
+				Correctoption    string      `json:"Correctoption"`
+				Eachquestiontime interface{} `json:"Eachquestiontime"`
+			} `json:"Questions"`
+		}
+		if err := json.Unmarshal([]byte(roomData), &quiz); err != nil {
+			log.Println("Quiz unmarshal error:", err)
+			continue
+		}
+
+		qNo, err := strconv.Atoi(data.QuestionNo)
+		if err != nil {
+			log.Println("Invalid question number format:", data.QuestionNo)
+			continue
+		}
+		if qNo < 0 || qNo >= len(quiz.Questions) {
+			log.Println("Invalid question number:", data.QuestionNo)
+			continue
+		}
+
+		correctIndex, err := strconv.Atoi(quiz.Questions[qNo].Correctoption)
+		if err != nil || correctIndex < 0 || correctIndex >= len(quiz.Questions[qNo].Options) {
+			log.Println("Invalid correct option index for question:", qNo)
+			continue
+		}
+
+		correctAns := quiz.Questions[qNo].Options[correctIndex]
+		log.Printf("User %s answered: %s | Correct: %s", data.UserID, data.Ans, correctAns)
+
+		if strings.EqualFold(data.Ans, correctAns) {
+			scoreKey := fmt.Sprintf("score:%s:%s", data.RoomID, data.UserID)
+			log.Printf("Answer matched! Writing score for key: %s", scoreKey)
+
+			if _, err := rdb.IncrBy(ctx, scoreKey, 50).Result(); err != nil {
+				log.Println("Redis score increment error:", err)
+			} else {
+				log.Printf("✅ User %s +50 points!", data.UserID)
+			}
+		} else {
+			log.Printf("❌ Wrong answer by %s", data.UserID)
+		}
 	}
 }
 

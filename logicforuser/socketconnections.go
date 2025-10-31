@@ -60,7 +60,7 @@ func HostConnection(c *gin.Context) {
 	defer cancel()
 	_, err = collection.UpdateOne(
 		ctx,
-		bson.M{"roomid": roomID, "hostid": hostID},
+		bson.M{"RoomId": roomID, "HostID": hostID},
 		bson.M{"$set": bson.M{"quizstarted": true}},
 	)
 	if err != nil {
@@ -68,7 +68,7 @@ func HostConnection(c *gin.Context) {
 	}
 
 	var details structure.Event
-	if err := collection.FindOne(ctx, bson.M{"roomid": roomID, "hostid": hostID}).Decode(&details); err != nil {
+	if err := collection.FindOne(ctx, bson.M{"RoomId": roomID, "HostID": hostID}).Decode(&details); err != nil {
 		conn.Close()
 		return
 	}
@@ -111,13 +111,13 @@ func ConnecttoRoom(c *gin.Context) {
 
 	room := GetRoom(roomID)
 	if room == nil {
-		log.Println("❌ room not found for roomID:", roomID)
+		log.Println(" room not found for roomID:", roomID)
 		c.JSON(404, gin.H{"error": "room not found"})
 		return
 	}
 
 	if room.Register == nil {
-		log.Println("❌ room.Register is nil — initializing channels")
+		log.Println(" room.Register is nil — initializing channels")
 		room.Register = make(chan *UserClient)
 		room.Unregister = make(chan *UserClient)
 		room.Broadcast = make(chan []byte)
@@ -136,7 +136,7 @@ func ConnecttoRoom(c *gin.Context) {
 	}
 	host = strings.Trim(host, `[]"`)
 	if host != hostID {
-		log.Println("❌ Host ID mismatch — expected:", host, "got:", hostID)
+		log.Println(" Host ID mismatch — expected:", host, "got:", hostID)
 		c.JSON(400, gin.H{"error": "host mismatch"})
 		return
 	}
@@ -165,7 +165,6 @@ func ConnecttoRoom(c *gin.Context) {
 		RoomID: roomID,
 	}
 
-	// ✅ safe: room.Register now initialized
 	room.Register <- wsClient
 
 	go wsClient.UReadPump(room)
@@ -263,7 +262,6 @@ func (h *Room) Run() {
 // 	// go client.WritePump()   // sends messages to the client
 // 	go client.ReadPump(hub) // reads messages (answers) from the client
 // }
-
 // func BroadcastQuestion(hub *Room, question string) {
 // 	hub.Broadcast <- []byte(question)
 // }
