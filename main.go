@@ -24,17 +24,23 @@ func main() {
 	r := gin.Default()
 
 	// CORS_ORIGINS is a comma-separated allowlist, e.g.
-	// "http://localhost:5173,https://trivyo.example". Unset allows any origin.
-	// Auth uses bearer tokens, not cookies, so credentials are not needed.
+	// "https://trivyo.vercel.app,https://trivyo-*.vercel.app". Unset allows
+	// any origin. Auth uses bearer tokens, not cookies, so credentials are
+	// not needed.
 	corsCfg := cors.Config{
 		AllowMethods:  []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders:  []string{"Origin", "Content-Type", "Authorization"},
 		ExposeHeaders: []string{"Content-Length"},
 		MaxAge:        12 * time.Hour,
 	}
-	if origins := os.Getenv("CORS_ORIGINS"); origins != "" {
-		for _, o := range strings.Split(origins, ",") {
-			corsCfg.AllowOrigins = append(corsCfg.AllowOrigins, strings.TrimSpace(o))
+	if allow := parseOrigins(os.Getenv("CORS_ORIGINS")); len(allow) > 0 {
+		log.Printf("CORS: allowing %s", strings.Join(allow, ", "))
+		corsCfg.AllowOriginFunc = func(origin string) bool {
+			if originAllowed(allow, origin) {
+				return true
+			}
+			log.Printf("CORS: blocked origin %q (not in CORS_ORIGINS)", origin)
+			return false
 		}
 	} else {
 		corsCfg.AllowAllOrigins = true
