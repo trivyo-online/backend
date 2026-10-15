@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"trivyo_online/structure"
 
 	"github.com/gorilla/websocket"
 )
@@ -157,7 +156,7 @@ func (c *HostClient) HReadPump(hub *Room) {
 		c.Conn.Close()
 	}()
 
-	rdb := structure.RedisClient()
+	rdb := rdbClient()
 
 	for {
 		_, msg, err := c.Conn.ReadMessage()
@@ -172,7 +171,7 @@ func (c *HostClient) HReadPump(hub *Room) {
 			continue
 		}
 
-		roomKey := fmt.Sprintf("event:%s", data.UserID)
+		roomKey := fmt.Sprintf("event:%s", hub.ID)
 		roomData, err := rdb.Do(ctx, "JSON.GET", roomKey).Text()
 		if err != nil {
 			log.Println("Redis JSON.GET error:", err)
@@ -212,16 +211,24 @@ func (c *HostClient) HReadPump(hub *Room) {
 		log.Printf("User %s answered: %s | Correct: %s", data.UserID, data.Ans, correctAns)
 
 		if strings.EqualFold(data.Ans, correctAns) {
-			scoreKey := fmt.Sprintf("score:%s:%s", data.RoomID, data.UserID)
-			log.Printf("Answer matched! Writing score for key: %s", scoreKey)
-
-			if _, err := rdb.IncrBy(ctx, scoreKey, 50).Result(); err != nil {
-				log.Println("Redis score increment error:", err)
-			} else {
-				log.Printf("✅ User %s +50 points!", data.UserID)
+			first, err := MarkAnswered(ctx, rdb, hub.ID, data.QuestionNo, data.UserID)
+			if err != nil {
+				log.Println("Redis answered-set error:", err)
+				continue
 			}
+			if !first {
+				log.Printf("User %s already answered question %d", data.UserID, qNo)
+				continue
+			}
+			total, err := AddScore(ctx, rdb, hub.ID, data.UserID, pointsPerCorrect)
+			if err != nil {
+				log.Println("Redis score increment error:", err)
+				continue
+			}
+			log.Printf("User %s +%d points (total %d)", data.UserID, pointsPerCorrect, int(total))
+			broadcastLeaderboard(ctx, rdb, hub)
 		} else {
-			log.Printf("❌ Wrong answer by %s", data.UserID)
+			log.Printf("Wrong answer by %s", data.UserID)
 		}
 	}
 }

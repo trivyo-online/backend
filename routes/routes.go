@@ -32,6 +32,7 @@ func RegisterRoutes(r *gin.Engine) {
 
 		api.GET("/host", logicforuser.HostConnection)
 		api.GET("/connect", logicforuser.ConnecttoRoom)
+		api.GET("/leaderboard", logicforuser.LeaderboardHandler)
 
 	}
 }
