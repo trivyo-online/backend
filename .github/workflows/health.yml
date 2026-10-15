@@ -1,0 +1,46 @@
+# Pings the deployed API's health endpoint every 5 minutes. This keeps the
+# Render free instance from sleeping and fails the run (and emails the repo
+# owner) when the API is down.
+#
+# Override the URL with a repository variable named HEALTH_URL
+# (Settings → Secrets and variables → Actions → Variables).
+name: API health
+
+on:
+  schedule:
+    - cron: '*/5 * * * *' # GitHub may delay scheduled runs by a few minutes under load
+  workflow_dispatch: # allow a manual run from the Actions tab
+
+permissions: {}
+
+concurrency:
+  group: api-health
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      HEALTH_URL: ${{ vars.HEALTH_URL || 'https://backend-1-h30q.onrender.com/api/health' }}
+    steps:
+      - name: GET /api/health
+        run: |
+          # A sleeping Render instance can take ~60 s to wake, so allow a long
+          # first request and retry before calling it down.
+          for attempt in 1 2 3 4; do
+            start=$(date +%s%3N)
+            body=$(curl -sS --max-time 90 -w '\n%{http_code}' "$HEALTH_URL" || true)
+            ms=$(( $(date +%s%3N) - start ))
+            code=$(printf '%s' "$body" | tail -n1)
+            body=$(printf '%s' "$body" | sed '$d')
+            echo "attempt $attempt: HTTP $code in ${ms} ms: $body"
+            if [ "$code" = "200" ] && printf '%s' "$body" | grep -q '"status":"ok"'; then
+              echo "### ✅ API healthy (${ms} ms)" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep $(( attempt * 15 ))
+          done
+          echo "### ❌ API unhealthy: last response HTTP $code" >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::$HEALTH_URL did not return {\"status\":\"ok\"} after 4 attempts"
+          exit 1
