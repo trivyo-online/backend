@@ -199,6 +199,7 @@ func RoomInfo(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"roomid": ev.RoomId, "name": ev.Nameofroom, "hostid": ev.HostID, "date": ev.DateofQuiz,
 		"starttime": ev.StartTime, "questioncount": len(ev.Questions), "live": IsLive(id),
+		"scheduledat": ev.ScheduledAt, "autostart": ev.AutoStart, "finished": ev.Finished,
 	})
 }
 

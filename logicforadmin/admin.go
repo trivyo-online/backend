@@ -90,10 +90,26 @@ func owned(c *gin.Context, roomID string) (*structure.Event, bool) {
 }
 
 type eventInput struct {
-	Nameofroom string
-	StartTime  string
-	DateofQuiz string
-	Questions  []structure.Question
+	Nameofroom  string
+	StartTime   string
+	DateofQuiz  string
+	Questions   []structure.Question
+	ScheduledAt *time.Time // RFC 3339; null clears the schedule
+	AutoStart   bool
+}
+
+func (in *eventInput) check() string {
+	in.Nameofroom = strings.TrimSpace(in.Nameofroom)
+	if in.Nameofroom == "" {
+		return "event name is required"
+	}
+	if in.Questions == nil {
+		in.Questions = []structure.Question{}
+	}
+	if in.AutoStart && in.ScheduledAt == nil {
+		return "auto-start needs a scheduled time"
+	}
+	return validateAll(in.Questions)
 }
 
 func InsertEvent(c *gin.Context) {
@@ -102,26 +118,20 @@ func InsertEvent(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON"})
 		return
 	}
-	in.Nameofroom = strings.TrimSpace(in.Nameofroom)
-	if in.Nameofroom == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "event name is required"})
-		return
-	}
-	if in.Questions == nil {
-		in.Questions = []structure.Question{}
-	}
-	if msg := validateAll(in.Questions); msg != "" {
+	if msg := in.check(); msg != "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
 		return
 	}
 
 	ev := structure.Event{
-		Nameofroom: in.Nameofroom,
-		StartTime:  in.StartTime,
-		DateofQuiz: in.DateofQuiz,
-		HostID:     auth.Current(c),
-		Questions:  in.Questions,
-		CreatedAt:  time.Now(),
+		ScheduledAt: in.ScheduledAt,
+		AutoStart:   in.AutoStart,
+		Nameofroom:  in.Nameofroom,
+		StartTime:   in.StartTime,
+		DateofQuiz:  in.DateofQuiz,
+		HostID:      auth.Current(c),
+		Questions:   in.Questions,
+		CreatedAt:   time.Now(),
 	}
 	ctx, cancel := timeout()
 	defer cancel()
@@ -187,6 +197,7 @@ func ListEvents(c *gin.Context) {
 		out = append(out, gin.H{
 			"RoomId": ev.RoomId, "Nameofroom": ev.Nameofroom, "DateofQuiz": ev.DateofQuiz, "StartTime": ev.StartTime,
 			"QuestionCount": len(ev.Questions), "Live": logicforuser.IsLive(ev.RoomId), "CreatedAt": ev.CreatedAt,
+			"ScheduledAt": ev.ScheduledAt, "AutoStart": ev.AutoStart, "Finished": ev.Finished,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"events": out})
@@ -210,29 +221,28 @@ func UpdateEvent(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON"})
 		return
 	}
-	in.Nameofroom = strings.TrimSpace(in.Nameofroom)
-	if in.Nameofroom == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "event name is required"})
-		return
-	}
-	if in.Questions == nil {
-		in.Questions = []structure.Question{}
-	}
-	if msg := validateAll(in.Questions); msg != "" {
+	if msg := in.check(); msg != "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
 		return
 	}
+	set := bson.M{
+		"nameofroom": in.Nameofroom, "starttime": in.StartTime, "dateofquiz": in.DateofQuiz, "questions": in.Questions,
+		"autostart": in.AutoStart, "scheduledat": in.ScheduledAt,
+	}
+	// A new schedule makes a finished test runnable again.
+	if in.ScheduledAt != nil && (ev.ScheduledAt == nil || !in.ScheduledAt.Equal(*ev.ScheduledAt)) {
+		set["finished"] = false
+	}
 	ctx, cancel := timeout()
 	defer cancel()
-	_, err := events().UpdateOne(ctx, bson.M{"roomid": ev.RoomId}, bson.M{"$set": bson.M{
-		"nameofroom": in.Nameofroom, "starttime": in.StartTime, "dateofquiz": in.DateofQuiz, "questions": in.Questions,
-	}})
+	_, err := events().UpdateOne(ctx, bson.M{"roomid": ev.RoomId}, bson.M{"$set": set})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not save event"})
 		return
 	}
 	logicforuser.RefreshQuestions(ev.RoomId, in.Questions)
 	ev.Nameofroom, ev.StartTime, ev.DateofQuiz, ev.Questions = in.Nameofroom, in.StartTime, in.DateofQuiz, in.Questions
+	ev.ScheduledAt, ev.AutoStart = in.ScheduledAt, in.AutoStart
 	c.JSON(http.StatusOK, gin.H{"message": "saved", "event": ev})
 }
 

@@ -6,10 +6,12 @@ import (
 	"strings"
 	"time"
 
+	"trivyo_online/logicforuser"
 	"trivyo_online/routes"
 	"trivyo_online/structure"
 
 	"github.com/gin-contrib/cors"
+	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
 )
 
@@ -17,6 +19,7 @@ func main() {
 	// Connect up front so a bad MON fails at startup, not on first request.
 	structure.Client()
 	structure.RedisClient()
+	logicforuser.StartScheduler()
 
 	r := gin.Default()
 
@@ -37,6 +40,8 @@ func main() {
 		corsCfg.AllowAllOrigins = true
 	}
 	r.Use(cors.New(corsCfg))
+	// Compress JSON for slow links; WebSockets negotiate their own deflate.
+	r.Use(gzip.Gzip(gzip.DefaultCompression, gzip.WithExcludedPaths([]string{"/api/host", "/api/connect"})))
 
 	routes.RegisterRoutes(r)
 

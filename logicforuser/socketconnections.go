@@ -20,11 +20,28 @@ import (
 
 var U = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
+	// permessage-deflate: smaller frames on slow mobile links.
+	EnableCompression: true,
+	ReadBufferSize:    2048,
+	WriteBufferSize:   4096,
 }
 
 func events() *mongo.Collection { return structure.DB().Collection("event") }
 
 var userRe = regexp.MustCompile(`^[\p{L}\p{N} _.-]{1,24}$`)
+
+// GoLive marks an event started, caches it and returns its running room.
+func GoLive(ev structure.Event) *Room {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := events().UpdateOne(ctx, bson.M{"roomid": ev.RoomId}, bson.M{"$set": bson.M{"quizstarted": true}}); err != nil {
+		log.Println("mongo update quizstarted error:", err)
+	}
+	ev.QuizStarted = true
+	cacheEvent(ctx, ev)
+	room, _ := OpenRoom(ev)
+	return room
+}
 
 // HostConnection opens the host's control socket and makes the room live.
 // GET /api/host?roomid=...&token=...
@@ -39,40 +56,45 @@ func HostConnection(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "missing roomid"})
 		return
 	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	filter := bson.M{"roomid": roomID, "hostid": hostID}
 	var ev structure.Event
-	if err := events().FindOne(ctx, filter).Decode(&ev); err != nil {
+	if err := events().FindOne(ctx, bson.M{"roomid": roomID, "hostid": hostID}).Decode(&ev); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "event not found for this host"})
 		return
 	}
-	if _, err := events().UpdateOne(ctx, filter, bson.M{"$set": bson.M{"quizstarted": true}}); err != nil {
-		log.Println("mongo update quizstarted error:", err)
-	}
-	ev.QuizStarted = true
-	cacheEvent(ctx, ev)
 
 	conn, err := U.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		log.Println("WebSocket Upgrade error:", err)
 		return
 	}
-
-	// Reuse a running room so a host reconnect keeps its players.
-	room := GetRoom(roomID)
-	if room == nil {
-		room = NewRoom(ev)
-		SaveRoom(room)
-		go room.Run()
-	}
+	room := GoLive(ev) // reuses a running room, so a host reconnect keeps its players
 
 	h := &HostClient{Conn: conn, Send: make(chan []byte, sendBuffer), HostID: hostID, RoomID: roomID}
-	room.hostRegister <- h
+	h.Send <- mustJSON(map[string]any{"type": "welcome", "role": "host", "room": room.summary(), "leaderboard": RoomBoard(roomID, 100), "state": room.hostState()})
+	select {
+	case room.hostRegister <- h:
+	case <-room.stop:
+		conn.Close()
+		return
+	}
 	go writePump(conn, h.Send)
-	h.Send <- mustJSON(map[string]any{"type": "welcome", "role": "host", "room": room.summary(), "leaderboard": RoomBoard(roomID, 50)})
 	go h.readPump(room)
+}
+
+// hostState lets a reconnecting host resume the question in progress.
+func (r *Room) hostState() map[string]any {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.current < 0 || r.current >= len(r.questions) {
+		return nil
+	}
+	return map[string]any{
+		"questionno": r.current, "deadline": r.deadline.UnixMilli(), "now": time.Now().UnixMilli(), "revealed": r.revealed,
+		"secondsleft": max(0, time.Until(r.deadline).Seconds()),
+		"stats":       QuestionStats(r.ID, r.current),
+	}
 }
 
 // cacheEvent keeps a Redis copy of the live event when Redis is configured.
@@ -92,12 +114,13 @@ func cacheEvent(ctx context.Context, ev structure.Event) {
 	rdb.Expire(ctx, "event:"+ev.RoomId, 3*time.Hour)
 }
 
-// ConnecttoRoom joins a player to a live room.
-// GET /api/connect?roomid=...&userid=...  (hostid optional; checked if given)
+// ConnecttoRoom joins (or rejoins) a player to a live room.
+// GET /api/connect?roomid=...&userid=...&key=...  (hostid optional; checked if given)
 func ConnecttoRoom(c *gin.Context) {
 	roomID := strings.ToUpper(c.Query("roomid"))
 	userID := strings.TrimSpace(c.Query("userid"))
 	hostID := c.Query("hostid")
+	key := c.Query("key") // private per-browser rejoin key
 
 	if roomID == "" || !userRe.MatchString(userID) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "need roomid and a userid of 1-24 letters, digits, spaces, '.', '_' or '-'"})
@@ -112,7 +135,7 @@ func ConnecttoRoom(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "host mismatch"})
 		return
 	}
-	if !room.claim(userID) {
+	if !room.claim(userID, key) {
 		c.JSON(http.StatusConflict, gin.H{"error": "that name is already playing in this room"})
 		return
 	}
@@ -125,22 +148,40 @@ func ConnecttoRoom(c *gin.Context) {
 	}
 
 	u := &UserClient{Userid: userID, Conn: conn, Send: make(chan []byte, sendBuffer), RoomID: roomID}
-	// Queue the welcome before registering so it is the first frame.
-	u.Send <- mustJSON(map[string]any{
+	// Queue the resume state before registering so it arrives first:
+	// welcome (score, board), then the open question and any answer
+	// already given to it, so a reconnect lands exactly where it left off.
+	q, cur := room.currentQuestion()
+	welcome := map[string]any{
 		"type": "welcome", "role": "player", "userid": userID, "room": room.summary(),
 		"score": userScore(roomID, userID), "leaderboard": RoomBoard(roomID, 10),
-	})
-	if q := room.currentQuestion(); q != nil {
+	}
+	u.Send <- mustJSON(welcome)
+	if q != nil {
 		u.Send <- mustJSON(q)
+		if a := priorAnswer(roomID, userID, cur); a != nil {
+			u.Send <- mustJSON(map[string]any{"type": "result", "questionno": cur, "choice": a.Choice, "correct": a.Correct, "points": a.Points, "score": welcome["score"], "resumed": true})
+		}
 	}
 	select {
 	case room.register <- u:
 	case <-room.stop:
+		room.release(userID)
 		conn.Close()
 		return
 	}
 	go writePump(conn, u.Send)
 	go u.readPump(room)
+}
+
+func priorAnswer(roomID, userID string, no int) *structure.Answer {
+	ctx, cancel := ctx5()
+	defer cancel()
+	var a structure.Answer
+	if err := answers().FindOne(ctx, bson.M{"roomid": roomID, "questionno": no, "userid": userID}).Decode(&a); err != nil {
+		return nil
+	}
+	return &a
 }
 
 type playerMsg struct {
@@ -159,10 +200,19 @@ func (u *UserClient) readPump(room *Room) {
 		u.Conn.Close()
 	}()
 	prepareRead(u.Conn)
+	var limit bucket
+	strikes := 0
 	for {
 		_, raw, err := u.Conn.ReadMessage()
 		if err != nil {
 			return
+		}
+		if !limit.allow(4, 8) {
+			if strikes++; strikes > 20 {
+				return // persistent flooding: drop the connection
+			}
+			room.SendTo(u, map[string]any{"type": "error", "message": "slow down"})
+			continue
 		}
 		var m playerMsg
 		if err := json.Unmarshal(raw, &m); err != nil {
@@ -176,7 +226,7 @@ func (u *UserClient) readPump(room *Room) {
 		case "answer":
 			handleAnswer(room, u, m)
 		case "ping":
-			room.SendTo(u, map[string]any{"type": "pong"})
+			room.SendTo(u, map[string]any{"type": "pong", "now": time.Now().UnixMilli()})
 		default:
 			room.SendTo(u, map[string]any{"type": "error", "message": "unknown message type"})
 		}
@@ -193,19 +243,19 @@ func handleAnswer(room *Room, u *UserClient, m playerMsg) {
 	}
 	room.mu.RUnlock()
 
-	reject := func(msg string) {
-		room.SendTo(u, map[string]any{"type": "error", "message": msg})
+	reject := func(code, msg string) {
+		room.SendTo(u, map[string]any{"type": "error", "code": code, "message": msg, "questionno": cur})
 	}
 	if cur < 0 || q.Question == "" {
-		reject("no question is open")
+		reject("no_question", "no question is open")
 		return
 	}
 	if m.QuestionNo != nil && *m.QuestionNo != cur {
-		reject("that question is closed")
+		reject("closed", "that question is closed")
 		return
 	}
 	if now.After(deadline.Add(answerGrace)) {
-		reject("time is up")
+		reject("late", "time is up")
 		return
 	}
 	choice := -1
@@ -220,7 +270,7 @@ func handleAnswer(room *Room, u *UserClient, m playerMsg) {
 		}
 	}
 	if choice < 0 || choice >= len(q.Options) {
-		reject("invalid option")
+		reject("invalid", "invalid option")
 		return
 	}
 
@@ -235,12 +285,18 @@ func handleAnswer(room *Room, u *UserClient, m playerMsg) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := structure.DB().Collection("answers").InsertOne(ctx, a); err != nil {
+	if _, err := answers().InsertOne(ctx, a); err != nil {
 		if mongo.IsDuplicateKeyError(err) {
-			reject("you already answered this question")
+			// A retry after a dropped connection: re-send the original result
+			// so the client converges instead of showing an error.
+			if prev := priorAnswer(room.ID, u.Userid, cur); prev != nil {
+				room.SendTo(u, map[string]any{"type": "result", "questionno": cur, "choice": prev.Choice, "correct": prev.Correct, "points": prev.Points, "score": userScore(room.ID, u.Userid), "resumed": true})
+				return
+			}
+			reject("duplicate", "you already answered this question")
 		} else {
 			log.Println("answer insert:", err)
-			reject("could not record answer")
+			reject("server", "could not record answer")
 		}
 		return
 	}
@@ -248,12 +304,13 @@ func handleAnswer(room *Room, u *UserClient, m playerMsg) {
 	score := userScore(room.ID, u.Userid)
 	room.SendTo(u, map[string]any{"type": "result", "questionno": cur, "choice": choice, "correct": correct, "points": points, "score": score})
 	room.ToHosts(map[string]any{"type": "answer", "userid": u.Userid, "questionno": cur, "choice": choice, "correct": correct, "score": score, "ms": a.Ms})
-	room.Broadcast(map[string]any{"type": "leaderboard", "entries": RoomBoard(room.ID, 10)})
+	room.boardDirty.Store(true)
 }
 
 type hostMsg struct {
 	Type       string `json:"type"`
 	QuestionNo *int   `json:"questionno"`
+	Delay      int    `json:"delay"` // seconds before auto-run starts
 }
 
 func (h *HostClient) readPump(room *Room) {
@@ -291,32 +348,19 @@ func (h *HostClient) readPump(room *Room) {
 				no = room.current + 1
 				room.mu.RUnlock()
 			}
-			payload, ok := room.open(no)
-			if !ok {
+			if !room.StartQuestion(no) {
 				reply(map[string]any{"type": "error", "message": "no such question"})
-				continue
 			}
-			room.Broadcast(payload)
 		case "reveal":
-			room.mu.RLock()
-			cur := room.current
-			var correct string
-			if cur >= 0 && cur < len(room.questions) {
-				correct = room.questions[cur].Correctoption
-			}
-			room.mu.RUnlock()
-			if cur < 0 {
+			if !room.Reveal() {
 				reply(map[string]any{"type": "error", "message": "no question to reveal"})
-				continue
 			}
-			room.mu.Lock()
-			if time.Now().Before(room.deadline) {
-				room.deadline = time.Now() // close answers once revealed
-			}
-			room.mu.Unlock()
-			room.Broadcast(map[string]any{"type": "reveal", "questionno": cur, "correctoption": atoi(correct), "stats": QuestionStats(room.ID, cur)})
+		case "auto":
+			room.StartAuto(time.Now().Add(time.Duration(max(0, min(m.Delay, 3600))) * time.Second))
+		case "manual":
+			room.StopAuto()
 		case "leaderboard":
-			reply(map[string]any{"type": "leaderboard", "entries": RoomBoard(room.ID, 50)})
+			reply(map[string]any{"type": "hostboard", "entries": RoomBoard(room.ID, 100)})
 		case "end":
 			endRoom(room)
 			return
@@ -327,14 +371,17 @@ func (h *HostClient) readPump(room *Room) {
 }
 
 func endRoom(room *Room) {
+	if !dropRoom(room) {
+		return // already ended (host and autopilot can race here)
+	}
+	room.setAuto(nil)
 	board := RoomBoard(room.ID, 100)
 	room.Broadcast(map[string]any{"type": "end", "leaderboard": board})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := events().UpdateOne(ctx, bson.M{"roomid": room.ID}, bson.M{"$set": bson.M{"quizstarted": false}}); err != nil {
+	if _, err := events().UpdateOne(ctx, bson.M{"roomid": room.ID}, bson.M{"$set": bson.M{"quizstarted": false, "finished": true}}); err != nil {
 		log.Println("mongo end room:", err)
 	}
-	DropRoom(room.ID)
 	// Let Run flush the final broadcast before closing every socket.
-	time.AfterFunc(500*time.Millisecond, room.Stop)
+	time.AfterFunc(1500*time.Millisecond, room.Stop)
 }

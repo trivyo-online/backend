@@ -40,6 +40,11 @@ type Event struct {
 	QuizStarted       bool       `bson:"quizstarted"`
 	Timingperquestion time.Duration
 	CreatedAt         time.Time `bson:"createdat"`
+	// ScheduledAt with AutoStart: the server opens a lobby before this time
+	// and runs the quiz by itself from it.
+	ScheduledAt *time.Time `bson:"scheduledat,omitempty"`
+	AutoStart   bool       `bson:"autostart"`
+	Finished    bool       `bson:"finished"`
 }
 
 // Answer is one graded submission. (roomid, questionno, userid) is unique,
