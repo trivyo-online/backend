@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"trivyo_online/auth"
 	"trivyo_online/logicforadmin"
 	"trivyo_online/logicforuser"
 
@@ -8,30 +9,32 @@ import (
 )
 
 func RegisterRoutes(r *gin.Engine) {
-	// You can group your routes logically
-
 	api := r.Group("/api")
 	{
-		api.POST("/create-event", logicforadmin.InsertEvent)
-		api.POST("/add-question", logicforadmin.AddQuestionHandler)
-		// api.GET("/ws", func(c *gin.Context) {
-		// 	name := c.Query("name")
-		// 	logicforuser.ServeWS(hub, c.Writer, c.Request, name)
-		// })
-		// api.POST("/broad", func(c *gin.Context) {
-		// 	var body struct {
-		// 		Question string `json:"question"`
-		// 	}
-		// 	if err := c.BindJSON(&body); err != nil {
-		// 		c.JSON(400, gin.H{"error": "invalid body"})
-		// 		return
-		// 	}
-		// 	logicforuser.BroadcastQuestion(hub, body.Question)
-		// 	c.JSON(200, gin.H{"status": "sent"})
-		// })
+		api.GET("/health", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ok"}) })
 
+		// Admin accounts
+		api.POST("/admin/signup", auth.Signup)
+		api.POST("/admin/login", auth.Login)
+
+		admin := api.Group("", auth.Require())
+		admin.GET("/admin/me", auth.Me)
+		admin.POST("/create-event", logicforadmin.InsertEvent)
+		admin.POST("/add-question", logicforadmin.AddQuestionHandler)
+		admin.GET("/admin/events", logicforadmin.ListEvents)
+		admin.GET("/admin/events/:roomid", logicforadmin.GetEvent)
+		admin.PUT("/admin/events/:roomid", logicforadmin.UpdateEvent)
+		admin.DELETE("/admin/events/:roomid", logicforadmin.DeleteEvent)
+
+		// Rankings (public)
+		api.GET("/leaderboard", logicforuser.GlobalLeaderboard)
+		api.GET("/rooms", logicforuser.RecentRooms)
+		api.GET("/rooms/:roomid", logicforuser.RoomInfo)
+		api.GET("/rooms/:roomid/leaderboard", logicforuser.RoomLeaderboard)
+		api.GET("/rooms/:roomid/stats", logicforuser.RoomStats)
+
+		// WebSockets: the host authenticates with ?token=, players join by room code.
 		api.GET("/host", logicforuser.HostConnection)
 		api.GET("/connect", logicforuser.ConnecttoRoom)
-
 	}
 }
