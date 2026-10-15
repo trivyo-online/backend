@@ -64,12 +64,14 @@ func HostConnection(c *gin.Context) {
 		return
 	}
 
+	// Go live before the upgrade, so the room exists by the time the host's
+	// socket reports open and players are told to join.
+	room := GoLive(ev) // reuses a running room, so a host reconnect keeps its players
 	conn, err := U.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		log.Println("WebSocket Upgrade error:", err)
 		return
 	}
-	room := GoLive(ev) // reuses a running room, so a host reconnect keeps its players
 
 	h := &HostClient{Conn: conn, Send: make(chan []byte, sendBuffer), HostID: hostID, RoomID: roomID}
 	h.Send <- mustJSON(map[string]any{"type": "welcome", "role": "host", "room": room.summary(), "leaderboard": RoomBoard(roomID, 100), "state": room.hostState()})
