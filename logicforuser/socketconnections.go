@@ -361,6 +361,10 @@ func (h *HostClient) readPump(room *Room) {
 			room.StartAuto(time.Now().Add(time.Duration(max(0, min(m.Delay, 3600))) * time.Second))
 		case "manual":
 			room.StopAuto()
+		case "reset":
+			if _, _, err := ResetRoom(room.ID); err != nil {
+				reply(map[string]any{"type": "error", "message": "could not clear answers"})
+			}
 		case "leaderboard":
 			reply(map[string]any{"type": "hostboard", "entries": RoomBoard(room.ID, 100)})
 		case "end":
@@ -370,6 +374,31 @@ func (h *HostClient) readPump(room *Room) {
 			reply(map[string]any{"type": "error", "message": "unknown message type"})
 		}
 	}
+}
+
+// ResetRoom clears a test's players and answers so it can be run again
+// from scratch. If the room is live it goes back to its lobby and every
+// player is disconnected (they receive a "reset" frame and may rejoin).
+func ResetRoom(roomID string) (players int, removed int64, err error) {
+	room := GetRoom(roomID)
+	if room != nil {
+		// Close the question and kick players first so no new answer lands
+		// after the delete below.
+		players = room.ResetPlayers()
+	}
+	ctx, cancel := ctx5()
+	defer cancel()
+	res, err := answers().DeleteMany(ctx, bson.M{"roomid": roomID})
+	if err != nil {
+		log.Println("reset answers:", err)
+		return players, 0, err
+	}
+	if room != nil {
+		room.boardDirty.Store(false)
+		room.ToHosts(map[string]any{"type": "reset", "room": room.summary(), "players": players, "answers": res.DeletedCount})
+		room.ToHosts(map[string]any{"type": "hostboard", "entries": []BoardEntry{}})
+	}
+	return players, res.DeletedCount, nil
 }
 
 func endRoom(room *Room) {

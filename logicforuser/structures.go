@@ -19,6 +19,7 @@ const (
 	pongWait   = 60 * time.Second
 	pingPeriod = 25 * time.Second // short enough to keep mobile NATs open
 	sendBuffer = 64
+	closeGrace = time.Second
 	// Answers arriving just after the deadline still count, to absorb latency.
 	answerGrace = 1500 * time.Millisecond
 	// DefaultQuestionSeconds applies when a question has no Eachquestiontime.
@@ -84,6 +85,7 @@ type Room struct {
 	broadcast      chan []byte // everyone
 	toHosts        chan []byte
 	direct         chan direct
+	resetPlayers   chan chan int // Run kicks every player and replies with the count
 	stop           chan struct{}
 	stopOnce       sync.Once
 }
@@ -105,6 +107,7 @@ func NewRoom(ev structure.Event) *Room {
 		broadcast:      make(chan []byte, 256),
 		toHosts:        make(chan []byte, 1024),
 		direct:         make(chan direct, 1024),
+		resetPlayers:   make(chan chan int),
 		stop:           make(chan struct{}),
 	}
 }
@@ -165,6 +168,16 @@ func (r *Room) Run() {
 				drop(d.to)
 				playersChanged = true
 			}
+		case done := <-r.resetPlayers:
+			msg := mustJSON(map[string]any{"type": "reset", "message": "the host reset the room; join again"})
+			n := len(r.clients)
+			for c := range r.clients {
+				deliver(c.Send, msg) // queued ahead of the close, so it still arrives
+				drop(c)
+			}
+			playersChanged = false
+			r.toHostsNow(r.playersMsg())
+			done <- n
 		case <-tick.C:
 			// Joins come in bursts; tell hosts once a second at most.
 			if playersChanged {
@@ -335,6 +348,30 @@ func (r *Room) Reveal() bool {
 	return true
 }
 
+// ResetPlayers stops autopilot, puts the room back in its lobby and
+// disconnects every player, so the next run starts empty. It returns how
+// many players were removed. Stored answers are cleared by ResetRoom.
+func (r *Room) ResetPlayers() int {
+	r.setAuto(nil)
+	r.mu.Lock()
+	r.current = -1
+	r.revealed = false
+	r.opened, r.deadline, r.startsAt = time.Time{}, time.Time{}, time.Time{}
+	r.mu.Unlock()
+	done := make(chan int, 1)
+	select {
+	case r.resetPlayers <- done:
+	case <-r.stop:
+		return 0
+	}
+	select {
+	case n := <-done:
+		return n
+	case <-r.stop:
+		return 0
+	}
+}
+
 // currentQuestion returns the open question payload for a (re)joining player.
 func (r *Room) currentQuestion() (map[string]any, int) {
 	r.mu.RLock()
@@ -455,6 +492,9 @@ func writePump(conn *websocket.Conn, send <-chan []byte) {
 			conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if !ok {
 				conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "room closed"))
+				// Give the peer a moment to read the last frames and answer the
+				// close; closing the TCP socket at once can reset it and lose them.
+				time.Sleep(closeGrace)
 				return
 			}
 			if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
