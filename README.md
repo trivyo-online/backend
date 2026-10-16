@@ -61,6 +61,7 @@ sequenceDiagram
 | POST | `/add-question` | admin | `{roomid, question: {Question, Options[], Correctoption: "<index>", Eachquestiontime?}}` |
 | GET | `/admin/events` | admin | your events |
 | GET/PUT/DELETE | `/admin/events/:roomid` | admin | read, save (full replace), delete (refused while live) |
+| POST | `/admin/events/:roomid/reset` | admin | clear the test's players and answers so it can run again → `{players, answers, live}`. A live room goes back to its lobby and its players are disconnected. |
 | GET | `/rooms` | – | recently played rooms |
 | GET | `/rooms/:roomid` | – | public info: `live`, `scheduledat`, `autostart`, `finished` |
 | GET | `/rooms/:roomid/leaderboard?limit=` | – | room ranking (ties go to the faster player) |
@@ -76,6 +77,7 @@ Admin endpoints take `Authorization: Bearer <token>`. JSON responses are gzipped
   - `{"type":"reveal"}`
   - `{"type":"auto","delay":5}` to auto-run the rest, and `{"type":"manual"}` to stop auto-run
   - `{"type":"leaderboard"}`
+  - `{"type":"reset"}` to clear players and answers and go back to the lobby (same as the reset endpoint)
   - `{"type":"end"}`
 - **Player:** `/api/connect?roomid=ROOM&userid=NAME&key=REJOINKEY`. It accepts `{"type":"answer","questionno":0,"choice":1}` and `{"type":"ping"}`.
 - **Server frames:**
@@ -89,6 +91,7 @@ Admin endpoints take `Authorization: Bearer <token>`. JSON responses are gzipped
   - `reveal`: includes the answer distribution
   - `room`: sent when auto mode or the start time changes
   - `end`
+  - `reset`: sent to players just before they are disconnected, and to hosts with the emptied `room`
   - `error`: has a `code` (`no_question`, `closed`, `late`, `invalid`, `duplicate`)
 
 Rules:
@@ -105,7 +108,7 @@ With the server running (`MON=… go run .`):
 
 ```bash
 node tests/e2e.mjs                 # 38 checks: auth, editor, full game, rankings
-node tests/edge.mjs                # 58 checks: reconnects, timing, abuse, host drop, autopilot, schedule
+node tests/edge.mjs                # 71 checks: reconnects, timing, abuse, host drop, autopilot, schedule
 node tests/load.mjs http://localhost:8080 100 10 8 report.json   # load test
 node tests/bots.mjs ROOMCODE 100   # fill a live room with bots to watch in the browser
 ```

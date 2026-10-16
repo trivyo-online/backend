@@ -331,6 +331,57 @@ await section('Scheduled test opens a lobby and starts itself', async () => {
   ok(!(await api('GET', '/rooms/' + R)).data.live, 'finished scheduled test is not reopened')
 })
 
+await section('Reset players between runs', async () => {
+  const R = await room(T, [Q('r1', 2)])
+  const other = await admin()
+  ok((await api('POST', `/admin/events/${R}/reset`, null, other)).status === 404, "another admin cannot reset someone else's test")
+  let h = await host(R, T)
+  let ps = await Promise.all(['ra', 'rb'].map((n) => player(R, n)))
+  await Promise.all(ps.map((p) => p.next('welcome')))
+  h.send({ type: 'question', questionno: 0 })
+  await Promise.all(ps.map((p) => p.next('question')))
+  ps.forEach((p) => p.send({ type: 'answer', questionno: 0, choice: 2 }))
+  await Promise.all(ps.map((p) => p.next('result')))
+  h.send({ type: 'end' })
+  await wait(1800)
+  ok((await api('GET', `/rooms/${R}/leaderboard`)).data.entries.length === 2, 'first run left 2 players on the board')
+
+  // Reset while not live clears the stored answers.
+  const res = await api('POST', `/admin/events/${R}/reset`, null, T)
+  ok(res.status === 200 && res.data.answers === 2 && !res.data.live, 'reset of an ended test removes its 2 answers')
+  ok((await api('GET', `/rooms/${R}/leaderboard`)).data.entries.length === 0, 'board is empty after reset')
+
+  // Going live again starts clean: the same player can score again.
+  h = await host(R, T)
+  ps = [await player(R, 'ra')]
+  const w = await ps[0].next('welcome')
+  ok(w.score === 0 && w.leaderboard.length === 0, 'returning player starts at 0 on an empty board')
+  h.send({ type: 'question', questionno: 0 })
+  await ps[0].next('question')
+  ps[0].send({ type: 'answer', questionno: 0, choice: 2 })
+  const r = await ps[0].next('result')
+  ok(r.correct && !r.resumed && r.score === 50, 'returning player can answer again (not a resumed old answer)')
+
+  // Reset while live kicks players and returns the room to its lobby.
+  const res2 = await api('POST', `/admin/events/${R}/reset`, null, T)
+  ok(res2.status === 200 && res2.data.players === 1 && res2.data.answers === 1 && res2.data.live, 'live reset removes 1 player and 1 answer, room stays live')
+  ok((await ps[0].next('reset')).type === 'reset', 'player is told the room was reset')
+  await wait(300)
+  ok(ps[0].closed, 'player socket is closed after reset')
+  const hr = await h.next('reset')
+  ok(hr.room.current === -1 && hr.answers === 1, 'host is told the room is back in its lobby')
+  ok((await h.next('players', 4000, (m) => m.count === 0)).count === 0, 'host player list is empty')
+  const back = await player(R, 'ra', 'another-key')
+  const w2 = await back.next('welcome')
+  ok(w2.score === 0, 'player can rejoin after reset, even from a new browser')
+
+  // The host can also reset from its control socket.
+  h.send({ type: 'reset' })
+  ok((await back.next('reset')).type === 'reset', 'host socket reset kicks players too')
+  h.send({ type: 'end' })
+  await wait(300)
+})
+
 await section('Reconnect storm', async () => {
   const R = await room(T, [Q('storm', 1)])
   const h = await host(R, T)

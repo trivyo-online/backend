@@ -264,3 +264,19 @@ func DeleteEvent(c *gin.Context) {
 	_, _ = structure.DB().Collection("answers").DeleteMany(ctx, bson.M{"roomid": ev.RoomId})
 	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
 }
+
+// ResetEvent clears the players and answers of one of the admin's tests,
+// so it can be run again from scratch. A live room goes back to its lobby.
+// POST /api/admin/events/:roomid/reset
+func ResetEvent(c *gin.Context) {
+	ev, ok := owned(c, c.Param("roomid"))
+	if !ok {
+		return
+	}
+	players, removed, err := logicforuser.ResetRoom(ev.RoomId)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not reset players"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "reset", "players": players, "answers": removed, "live": logicforuser.IsLive(ev.RoomId)})
+}

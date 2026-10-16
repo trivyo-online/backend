@@ -25,6 +25,7 @@ func RegisterRoutes(r *gin.Engine) {
 		admin.GET("/admin/events/:roomid", logicforadmin.GetEvent)
 		admin.PUT("/admin/events/:roomid", logicforadmin.UpdateEvent)
 		admin.DELETE("/admin/events/:roomid", logicforadmin.DeleteEvent)
+		admin.POST("/admin/events/:roomid/reset", logicforadmin.ResetEvent)
 
 		// Rankings (public)
 		api.GET("/leaderboard", logicforuser.GlobalLeaderboard)
